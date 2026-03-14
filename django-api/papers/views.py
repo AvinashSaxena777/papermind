@@ -1,3 +1,5 @@
+import uuid
+import redis
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from .models import Paper, AnalysisJob
@@ -7,6 +9,10 @@ from rest_framework import status
 from rest_framework.decorators import action
 from django.core.cache import cache
 from .throttles import AnalyzeRateThrottle
+from django.conf import settings
+
+
+redis_client = redis.Redis.from_url(settings.REDIS_URL)
 
 class PaperViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -50,6 +56,13 @@ class PaperViewSet(viewsets.ModelViewSet):
         
         cache_key = f"job:{job.id}:status"
         cache.set(cache_key, 'pending', timeout=3600)
+        
+        
+        # from django.core.cache import caches
+        # redis_client = caches['default'].client.get_client()
+        # redis_client.lpush('job_queue', str(job.id))
+        
+        redis_client.lpush('job_queue', str(job.id))
         
         paper.status = 'processing'
         paper.save()

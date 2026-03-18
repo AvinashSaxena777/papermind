@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package paperanalysis;
+
+option go_package = "github.com/AvinashSaxena777/papermind/mcp-tool-server/proto";
+
+//---Messages--------------
+
+//-----Request---------
+message AnalyzeRequest{
+    string job_id = 1;
+    string paper_url = 2;
+    string paper_title = 3;
+}
+
+//-----Response--------
+
+message KeyFinding{
+    string finding=1;
+    float relevance_score=2;
+}
+
+message AnalyzeResponse{
+    string job_id = 1;
+    string status = 2;
+    string summary = 3;
+    repeated KeyFinding key_findings=4;
+    float confidence_score = 5;
+    string error_message = 6;
+}
+
+//------Service--------
+service PaperAnalysisService{
+    rpc AnalyzePaper(AnalyzeRequest) returns (AnalyzeResponse);
+}

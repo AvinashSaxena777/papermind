@@ -11,6 +11,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
+GRPC_SERVER = os.environ.get('GRPC_SERVER', 'localhost:50051')
 
 ALLOWED_HOSTS = ['*']
 

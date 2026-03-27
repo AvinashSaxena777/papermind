@@ -12,6 +12,9 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG', 'False') == 'True'
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379/0')
 GRPC_SERVER = os.environ.get('GRPC_SERVER', 'localhost:50051')
+KAFKA_BOOTSTRAP_SERVERS = os.environ.get('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+KAFKA_ANALYZE_TOPIC = os.environ.get('KAFKA_ANALYZE_TOPIC', 'paper.analyze')
+KAFKA_RESULTS_TOPIC = os.environ.get('KAFKA_RESULTS_TOPIC', 'paper.results')
 
 ALLOWED_HOSTS = ['*']
 

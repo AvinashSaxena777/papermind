@@ -10,9 +10,15 @@ from rest_framework.decorators import action
 from django.core.cache import cache
 from .throttles import AnalyzeRateThrottle
 from django.conf import settings
+import json
+from kafka import KafkaProducer
+from django.conf import settings
 
-
-redis_client = redis.Redis.from_url(settings.REDIS_URL)
+# redis_client = redis.Redis.from_url(settings.REDIS_URL)
+kafka_producer = KafkaProducer(
+    bootstrap_servers=settings.KAFKA_BOOTSTRAP_SERVERS,
+    value_serializer=lambda v: json.dumps(v).encode('utf-8')
+)
 
 class PaperViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
@@ -62,7 +68,19 @@ class PaperViewSet(viewsets.ModelViewSet):
         # redis_client = caches['default'].client.get_client()
         # redis_client.lpush('job_queue', str(job.id))
         
-        redis_client.lpush('job_queue', str(job.id))
+        # redis_client.lpush('job_queue', str(job.id))
+        
+        kafka_producer.send(
+            settings.KAFKA_ANALYZE_TOPIC,
+            value={
+                'job_id': str(job.id),
+                'paper_id': str(paper.id),
+                'paper_url': paper.url,
+                'paper_title': paper.title
+            }
+        )
+        
+        kafka_producer.flush()
         
         paper.status = 'processing'
         paper.save()

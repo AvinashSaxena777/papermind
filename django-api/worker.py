@@ -10,10 +10,12 @@ Start with: python worker.py
 import os
 import sys
 import time
+import json
 import django
 import redis
 import logging
 import grpc
+from kafka import KafkaConsumer, KafkaProducer
 
 #Django Setup
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
@@ -38,11 +40,39 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-#Redis Connection
-redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
+# #Redis Connection
+# redis_client = redis.Redis.from_url(settings.REDIS_URL, decode_responses=True)
 
-QUEUE_NAME = 'job_queue'
+# QUEUE_NAME = 'job_queue'
+
 GRPC_SERVER = settings.GRPC_SERVER
+KAFKA_SERVERS = settings.KAFKA_BOOTSTRAP_SERVERS
+ANALYZE_TOPIC = settings.KAFKA_ANALYZE_TOPIC
+RESULTS_TOPIC = settings.KAFKA_RESULTS_TOPIC
+
+
+def create_consumer():
+    """
+    KafkaConsumer : reads message from paper.analyze topic
+    """
+    return KafkaConsumer(
+        ANALYZE_TOPIC,
+        bootstrap_servers = KAFKA_SERVERS,
+        group_id = 'paper-workers',
+        value_deserializer = lambda m: json.loads(m.decode('utf-8')),
+        auto_offset_reset='earliest',
+        enable_auto_commit=True
+    )
+
+def create_producer():
+    """
+    KafkaProducer : sends results to paper.results topic
+    """
+    return KafkaProducer(
+        bootstrap_servers=KAFKA_SERVERS,
+        value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    )
+
 
 def get_grpc_stub():
     """
@@ -78,17 +108,20 @@ def get_grpc_stub():
 #     }
     
 
-def process_job(job_id):
+def process_job(event, producer):
     """
-    Processes a single analysis job
-    1. Fetch job + paper from db
-    2. Pass paper to analyze and analysis starts
-    3. Update Job Status in DB
-    4. Update Job Status in Redis Cache
-
-    Args:
-        job_id (_type_): _description_
+    Processes one job event from kafka
+    event = dict with job_id, paper_id, paper_url, paper_title
     """
+    
+    job_id = event['job_id']
+    paper_url = event['paper_url']
+    paper_title = event['paper_title']
+    
+    if not job_id:
+        logger.warning(f"Skipping message with no job_id: {event}")
+        return
+    
     logger.info(f"Processing job: {job_id}")
     try:
         job = AnalysisJob.objects.select_related('paper').get(id=job_id)
@@ -118,7 +151,9 @@ def process_job(job_id):
         logger.info(f"Key findings: {len(response.key_findings)}")
         logger.info(f"Confidence: {response.confidence_score}")
         
-        result = {
+        result_event = {
+            'job_id': job_id,
+            'status': 'completed',
             'summary':response.summary,
             'confidence_score': response.confidence_score,
             'key_findings':[
@@ -130,28 +165,31 @@ def process_job(job_id):
             ]
         }
         
-        job.status = 'completed'
-        job.result = result
-        job.save()
+        # job.status = 'completed'
+        # job.result = result
+        # job.save()
+        
+        producer.send(RESULTS_TOPIC, value=result_event)
+        producer.flush()
+        logger.info(f"Result event produced to {RESULTS_TOPIC}")
         
         cache.set(f"job:{job_id}:status", 'completed', timeout=3600)
         logger.info(f"Job {job_id} -> completed")
         
     except grpc.RpcError as e:
-        logger.error(f"gRPC error for job {job_id}: {e.code()} - {e.details()}")
-        job.status = 'failed'
-        job.error_message = f"gRPC error: {e.details()}"
-        job.save()
+        logger.error(f"gRPC error: {e.code()} - {e.details()}")
+        # Produce failure event
+        producer.send(RESULTS_TOPIC, value={
+            'job_id': job_id,
+            'status': 'failed',
+            'error_message': e.details()
+        })
+        producer.flush()
         cache.set(f"job:{job_id}:status", 'failed', timeout=3600)
         
     except Exception as e:
-        logger.error(f"Unexpected error for job {job_id}: {e}")
-        job.status = 'failed'
-        job.error_message = str(e)
-        job.save()
-        
+        logger.error(f"Unexpected error: {e}")
         cache.set(f"job:{job_id}:status", 'failed', timeout=3600)
-        logger.error(f"Job: {job_id} -> failed: {e}")
 
 
 def main():
@@ -159,27 +197,30 @@ def main():
     main -> processJob -> analyze
     """
     logger.info("PaperMind Worker started.....")
-    logger.info(f"Watching queue: {QUEUE_NAME}")
+    # logger.info(f"Watching queue: {QUEUE_NAME}")
+    logger.info(f"Consuming from: {ANALYZE_TOPIC}")
+    logger.info(f"Producing to: {RESULTS_TOPIC}")
     logger.info(f"gRPC server: {GRPC_SERVER}")
     logger.info("Waiting for jobs....(Ctrl+c to stop)")
     
+    consumer = create_consumer()
+    producer = create_producer()
+    
     while True:
         try:
-            result = redis_client.brpop(QUEUE_NAME, timeout=0)
-            
-            if result:
-                queue_name, job_id = result
-                logger.info(f"Recieved Job from queue: {job_id}")
-                process_job(job_id)
-        except redis.ConnectionError:
-            logger.error("Redis connection lost - retrying in 5 seconds")
-            time.sleep(5)
+            for message in consumer:
+                event = message.value
+                logger.info(f"Receieved event: job_id={event.get('job_id')}")
+                process_job(event, producer)
         except KeyboardInterrupt:
             logger.info("Worker Stopped by User")
             sys.exit(0)
         except Exception as e:
-            logger.error(f"Unexpected Error: {e}")
-            time.sleep(1)
+            logger.error(f"Failed to process message: {e} — skipping")
+            continue   # skip bad message, move to next one
+        finally:
+            consumer.close()
+            producer.close()
 
 
 if __name__ == '__main__':
